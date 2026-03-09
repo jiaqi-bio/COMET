@@ -1,0 +1,9 @@
+# Core dependencies - versions to be confirmed after testing
+cellpose
+nimbus-inference
+numpy
+pandas
+scikit-image
+tifffile
+openpyxl
+matplotlib
