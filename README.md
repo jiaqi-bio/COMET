@@ -1,8 +1,10 @@
 # COMET — COmbinatorial Marker Expression Typing
 
-A computational pipeline for accurate quantification of rare immune cells in multiplexed immunohistochemistry (mIHC) whole-slide images.
+A computational pipeline for accurate quantification of rare immune cell populations in multiplexed immunohistochemistry (mIHC) whole-slide images.
 
-Developed to support the identification of IL-10+ CD4-CD8- double-negative T cells (DNTs) in IBD tissue, COMET integrates [CellposeSAM](https://github.com/MouseLand/cellpose) and [NIMBUS](https://github.com/angelolab/nimbus-inference) with three targeted improvements for multi-marker rare-cell phenotyping.
+COMET integrates [CellposeSAM](https://github.com/MouseLand/cellpose) and [NIMBUS](https://github.com/angelolab/nimbus-inference) with three targeted improvements designed for multi-marker rare-cell phenotyping in tissue sections.
+
+Developed in the **[Francis Chan Lab](https://francischanlab.com/)**, Liangzhu Laboratory, Zhejiang University.
 
 ---
 
@@ -10,26 +12,15 @@ Developed to support the identification of IL-10+ CD4-CD8- double-negative T cel
 
 | Improvement | Problem Solved |
 |---|---|
-| **Normalized signal fusion** (`signal_prep`) | Direct channel addition lets bright markers dominate segmentation input; per-channel percentile normalization ensures equal contribution |
-| **Tile overlap deduplication** (`deduplication`) | CellposeSAM has no built-in tile stitching; the same cell gets double-counted in overlapping regions |
-| **OTSU x factor thresholding** (`threshold`) | Standard OTSU alone fails when positive cells are rare (<1%); a per-marker multiplicative factor adjusts stringency for each marker |
+| **Normalized signal fusion** (`signal_prep`) | Direct channel addition allows bright markers to dominate segmentation input; per-channel percentile normalization ensures equal contribution from each marker |
+| **Tile overlap deduplication** (`deduplication`) | CellposeSAM has no built-in tile stitching; cells in overlapping regions are double-counted without correction |
+| **Otsu × factor thresholding** (`threshold`) | Standard Otsu thresholding fails when positive cells are rare (<1%); a per-marker multiplicative correction factor adjusts classification stringency |
 
 ---
 
 ## Pipeline
 
-```
-qptiff / ome.tiff
-    |
-    |-- 1. tile_split        Whole-slide -> 1024x1024 tiles (102px overlap)
-    |-- 2. channel_extract   Multi-channel tile -> per-marker .tif files
-    |-- 3. signal_prep       Nuclear + membrane fusion -> CellposeSAM input
-    |-- 4. CellposeSAM       Cell segmentation
-    |-- 5. deduplication     Border clearing + overlap deduplication
-    |-- 6. NIMBUS            Per-cell marker probability scoring
-    |-- 7. threshold         OTSU x factor classification + cell typing
-    `-- 8. qupath_export     Export results to QuPath for visualization
-```
+![COMET Pipeline](docs/COMET.png)
 
 ---
 
@@ -58,7 +49,7 @@ pip install -e .
 ```python
 import comet
 
-# Step 1: Tile the slides
+# Step 1: Tile the whole-slide image
 comet.tile_experiment(
     experiment_dir="my_experiment",
     suffix=".ome.tif",
@@ -70,14 +61,14 @@ comet.tile_experiment(
 comet.print_channel_metadata("my_experiment/Patient1.ome.tif")
 comet.extract_channels_experiment(
     experiment_dir="my_experiment",
-    channel_names=["DAPI", "EOMES", "CD3", "CD4", "CD8a", "TCR", "CXCR4"],
+    channel_names=["DAPI", "NuclearMarker", "MemMarker1", "MemMarker2"],
 )
 
-# Step 3: Prepare CellposeSAM input
+# Step 3: Prepare CellposeSAM input (normalized signal fusion)
 comet.prepare_cellpose_inputs(
     base_dir="my_experiment/Patient1",
-    nuclear_markers=["DAPI", "EOMES"],
-    membrane_markers=["CD3", "CD4", "CD8a", "TCR"],
+    nuclear_markers=["DAPI", "NuclearMarker"],
+    membrane_markers=["MemMarker1", "MemMarker2"],
 )
 
 # Step 4: Run CellposeSAM (GPU recommended)
@@ -87,23 +78,20 @@ comet.run_cellpose_slide("my_experiment/Patient1")
 comet.deduplicate_slide("my_experiment/Patient1")
 
 # Step 6: NIMBUS marker probability scoring
-# Note: include_channels must exactly match the channel filenames in image_data/
 comet.run_nimbus_slide(
     slide_dir="my_experiment/Patient1",
-    include_channels=["CD3", "CD4", "CD8a", "TCR", "CXCR4", "EOMES"],
+    include_channels=["MemMarker1", "MemMarker2", "NuclearMarker"],
 )
 
 # Step 7: Classify and assign cell types
-# Default factors: CD3=1.0, TCR=0.6, EOMES=1.6, CD4=0.4, CD8a=0.5, CD45=1.0
-# NIMBUS column names: Prob_{channel_name} (e.g. Prob_CD3, Prob_CD8a)
 result = comet.threshold_slide(
     nimbus_csv="my_experiment/Patient1/nimbus_output/nimbus_cell_table.csv",
-    markers=["CD3", "CD4", "CD8a", "TCR", "EOMES"],
-    # col_map is only needed if NIMBUS column names differ from Prob_{marker}
-    # e.g. col_map={"CD8a": "Prob_CD8"} if your NIMBUS outputs Prob_CD8
+    markers=["MemMarker1", "MemMarker2", "NuclearMarker"],
+    # col_map only needed if NIMBUS column names differ from Prob_{marker}
+    # e.g. col_map={"MemMarker1": "Prob_Mem1"}
 )
 
-# Step 8: Export to QuPath for visualization
+# Step 8: Export to QuPath
 comet.export_to_qupath(
     classified_csv="my_experiment/Patient1/nimbus_output/nimbus_cell_table_classified.csv",
 )
@@ -113,42 +101,20 @@ comet.export_to_qupath(
 
 ## Marker naming and NIMBUS columns
 
-NIMBUS names probability columns as `Prob_{channel_name}`. The channel_name is
-whatever you passed to `include_channels`. Example:
+NIMBUS names probability columns as `Prob_{channel_name}`, where `channel_name` is whatever was passed to `include_channels`:
 
 ```python
 # If you run NIMBUS with:
-include_channels=["CD3", "CD8a", "TCR"]
-# NIMBUS outputs columns: Prob_CD3, Prob_CD8a, Prob_TCR
+include_channels=["CD3", "CD8a", "Marker"]
+# NIMBUS outputs: Prob_CD3, Prob_CD8a, Prob_Marker
 
-# threshold_slide expects these column names by default.
-# If your NIMBUS output uses different names (e.g. from an older analysis),
-# use col_map to remap:
+# Use col_map only if your NIMBUS output uses different names:
 result = comet.threshold_slide(
     nimbus_csv="...",
-    markers=["CD3", "CD8a", "TCR"],
-    col_map={"CD8a": "Prob_CD8"},   # only if NIMBUS named it Prob_CD8
+    markers=["CD3", "CD8a", "Marker"],
+    col_map={"CD8a": "Prob_CD8"},   # only if needed
 )
 ```
-
----
-
-## Cell type classification
-
-`threshold_slide` assigns a `Cell_Type` column based on this hierarchy (from highest to lowest priority):
-
-| Cell_Type | Criteria |
-|---|---|
-| `gd+T` | CD3+ & TCR- |
-| `ab+CD4+T` | CD3+ & TCR+ & CD4+ |
-| `ab+CD8+T` | CD3+ & TCR+ & CD8a+ |
-| `CD45+CD3-` | CD3- & CD45+ |
-| `ab+EOMES-DNT` | CD3+ & TCR+ & CD4- & CD8a- & EOMES- |
-| `ab+EOMES+DNT` | CD3+ & TCR+ & CD4- & CD8a- & EOMES+ |
-| `CD45+ Cells` | CD45+ (fallback) |
-
-CD4/CD8a double-positives are resolved by flipping the weaker signal to negative
-before classification.
 
 ---
 
@@ -161,23 +127,19 @@ my_experiment/
     |-- fov_coordinates.csv           # tile positions in WSI coordinates
     |-- Tiles/                        # multi-channel tiles
     |   `-- FOV0.tif, FOV1.tif ...
-    |-- image_data/                   # per-marker channel files
+    |-- image_data/                   # per-marker single-channel files
     |   `-- FOV0/
     |       |-- DAPI.tif
-    |       |-- EOMES.tif
-    |       `-- CD3.tif ...
+    |       `-- Marker.tif ...
     |-- segmentation/
     |   |-- cellpose_input/           # 2-channel fused input
-    |   |   `-- FOV0.tiff ...
     |   |-- cellpose_output/          # raw CellposeSAM masks (intermediate)
-    |   |   `-- FOV0_cp_masks.tif ...
     |   |-- deepcell_output/          # deduplicated masks (NIMBUS input)
-    |   |   `-- FOV0_whole_cell.tiff ...
     |   `-- deepcell_output_bak/      # backup of pre-dedup masks
     `-- nimbus_output/
         |-- nimbus_cell_table.csv               # NIMBUS probabilities
         |-- nimbus_cell_table_classified.csv    # final cell table with Cell_Type
-        |-- thresholds_used.csv                 # thresholds applied (for reporting)
+        |-- thresholds_used.csv                 # thresholds applied
         `-- threshold_distributions.png         # QC plots
 ```
 
@@ -194,13 +156,19 @@ comet/
 |-- segmentation/
 |   |-- signal_prep.py      # normalized signal fusion
 |   |-- run_cellpose.py     # CellposeSAM wrapper
-|   |-- deduplication.py    # border clearing + overlap dedup
+|   |-- deduplication.py    # border clearing + overlap deduplication
 |   `-- run_nimbus.py       # NIMBUS wrapper
 |-- classification/
-|   `-- threshold.py        # OTSU x factor thresholding + cell typing
+|   `-- threshold.py        # Otsu × factor thresholding + cell typing
 `-- export/
     `-- qupath_export.py    # QuPath TSV export
 ```
+
+---
+
+## Contributing
+
+COMET is open for community use. If you encounter bugs, have questions, or want to suggest improvements, please open a [GitHub Issue](https://github.com/jiaqi-bio/COMET/issues). Pull requests are also welcome.
 
 ---
 
@@ -208,11 +176,24 @@ comet/
 
 If you use COMET in your research, please cite:
 
-> [Manuscript in preparation] Spatial niche regulates IL-10-dependent efferocytosis during resolution of intestinal tissue inflammation.
+> [Spatial niche regulates IL-10–dependent efferocytosis during resolution of intestinal tissue inflammation] — Francis Chan Lab, Liangzhu Laboratory, Zhejiang University.
+> Code will be made available upon publication.
+
+---
+
+## Contributing
+
+COMET is open for community use. If you encounter bugs, have questions, or want to suggest improvements, please open a [GitHub Issue](https://github.com/jiaqi-bio/COMET/issues). Pull requests are also welcome.
+
+---
+
+## Contributing
+
+COMET is open for community use. If you encounter bugs, have questions, or want to suggest improvements, please open a [GitHub Issue](https://github.com/jiaqi-bio/COMET/issues). Pull requests are also welcome.
 
 ---
 
 ## Acknowledgements
 
-- [CellposeSAM](https://github.com/MouseLand/cellpose) — Stringer et al.
-- [NIMBUS](https://github.com/angelolab/nimbus-inference) — Angelo Lab
+- [CellposeSAM](https://github.com/MouseLand/cellpose) — Pachitariu et al., 2025
+- [NIMBUS](https://github.com/angelolab/nimbus-inference) — Rumberger, Greenwald et al., *Nature Methods*, 2025
