@@ -187,11 +187,6 @@ COMET is open for community use. If you encounter bugs, have questions, or want 
 
 ---
 
-## Contributing
-
-COMET is open for community use. If you encounter bugs, have questions, or want to suggest improvements, please open a [GitHub Issue](https://github.com/jiaqi-bio/COMET/issues). Pull requests are also welcome.
-
----
 
 ## Acknowledgements
 
