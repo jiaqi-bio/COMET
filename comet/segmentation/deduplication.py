@@ -59,9 +59,9 @@ def clear_tile_borders(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cell_files = sorted(input_dir.glob("FOV*_whole_cell.tif"))
+    cell_files = sorted(input_dir.glob("FOV*_whole_cell.tiff"))
     if not cell_files:
-        raise FileNotFoundError(f"No 'FOV*_whole_cell.tif' found in {input_dir}")
+        raise FileNotFoundError(f"No 'FOV*_whole_cell.tiff' found in {input_dir}")
 
     success = 0
     for file_path in cell_files:
@@ -99,7 +99,7 @@ def _build_global_canvas(
 
     tile_info = []
     for _, row in df.iterrows():
-        fov_name = row["FOV_Name"]
+        fov_name = str(row["FOV_Name"]).upper()
         file_path = tile_dir / tiff_pattern.format(FOV_Name=fov_name)
         tile_info.append({
             "fov_name": fov_name,
@@ -211,7 +211,7 @@ def deduplicate_slide(
     slide_dir: str,
     overlap_threshold: float = 0.1,
     min_cell_size: int = 0,
-    tiff_pattern: str = "{FOV_Name}_whole_cell.tif",
+    tiff_pattern: str = "{FOV_Name}_whole_cell.tiff",
     clear_borders: bool = True,
     border_buffer: int = 2,
     seg_subdir: str = "deepcell_output",
@@ -284,7 +284,7 @@ def deduplicate_experiment(
     slide_list: Optional[list] = None,
     overlap_threshold: float = 0.1,
     min_cell_size: int = 0,
-    tiff_pattern: str = "{FOV_Name}_whole_cell.tif",
+    tiff_pattern: str = "{FOV_Name}_whole_cell.tiff",
     clear_borders: bool = True,
     border_buffer: int = 2,
     seg_subdir: str = "deepcell_output",  

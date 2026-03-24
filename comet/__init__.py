@@ -6,6 +6,11 @@ from .preprocessing.channel_extract import (
     extract_channels_slide,
     extract_channels_experiment,
     print_channel_metadata,
+    resolve_channel_names,
+)
+from .preprocessing.pipeline import (
+    inspect_experiment_metadata,
+    run_signal_preparation_pipeline,
 )
 from .segmentation.signal_prep import prepare_cellpose_inputs
 from .segmentation.run_cellpose import run_cellpose_slide, run_cellpose_experiment

@@ -23,7 +23,7 @@ from tqdm import tqdm
 def run_cellpose_slide(
     slide_dir: str,
     channels: list = None,
-    diameter: float = 25.0,
+    diameter: float = None,
     flow_threshold: float = 0.8,
     cellprob_threshold: float = 0.0,
     batch_size: int = 32,
@@ -152,7 +152,7 @@ def run_cellpose_slide(
     for src in cp_masks:
         # FOV0_cp_masks.tif -> FOV0
         fov_name = re.sub(r"(_cp_masks|_seg)$", "", src.stem)
-        dst = final_dir / f"{fov_name}_whole_cell.tif"
+        dst = final_dir / f"{fov_name}_whole_cell.tiff"
         shutil.copy2(str(src), str(dst))
 
     print(f"  [cellpose] {len(cp_masks)} masks -> {final_dir}")

@@ -35,6 +35,7 @@ def _squeeze_to_chw(img: np.ndarray, path: str = "") -> np.ndarray:
         f"File: {path}"
     )
 
+
 def get_channel_names_from_metadata(slide_path: str) -> Optional[List[str]]:
     """
     Attempt to read channel names from ome.tif metadata.
@@ -66,9 +67,82 @@ def print_channel_metadata(slide_path: str) -> None:
         print("  Please specify channel_names manually.")
 
 
+
+def resolve_channel_names(
+    slide_path: str,
+    channel_names: Optional[List[str]] = None,
+) -> List[str]:
+    """
+    Resolve channel names for Stage 1 extraction.
+
+    If channel_names is provided, blank values are removed and the remaining
+    names are used in order. When fewer names are provided than appear in the
+    OME metadata, only the leading channels are exported and trailing channels
+    are ignored. If channel_names is omitted, metadata names are used.
+    """
+    cleaned_names = [
+        str(name).strip()
+        for name in (channel_names or [])
+        if str(name).strip()
+    ]
+    metadata_names = get_channel_names_from_metadata(slide_path)
+
+    if cleaned_names:
+        if metadata_names and len(cleaned_names) > len(metadata_names):
+            raise ValueError(
+                f"{Path(slide_path).name} exposes {len(metadata_names)} metadata channels, "
+                f"but {len(cleaned_names)} names were provided."
+            )
+        if metadata_names and len(cleaned_names) < len(metadata_names):
+            ignored = metadata_names[len(cleaned_names):]
+            print(
+                f"[channel metadata] Using the first {len(cleaned_names)} channels and "
+                f"ignoring the remaining {len(ignored)} trailing channels: {ignored}"
+            )
+        return cleaned_names
+
+    if metadata_names:
+        print("[channel metadata] No CHANNEL_NAMES provided. Using OME metadata names.")
+        return metadata_names
+
+    raise ValueError(
+        "CHANNEL_NAMES is empty and channel names could not be read from OME metadata."
+    )
+
+
+
+def _resolve_export_names(
+    n_channels: int,
+    channel_names: Optional[List[str]],
+    fov_name: str,
+) -> List[str]:
+    """Choose the channel names to export for one FOV."""
+    if not channel_names:
+        print(
+            f"  Warning: no channel names provided for {fov_name}. "
+            "Using channel1, channel2, ..."
+        )
+        return [f"channel{i+1}" for i in range(n_channels)]
+
+    if len(channel_names) > n_channels:
+        raise ValueError(
+            f"{fov_name} has {n_channels} channels, but {len(channel_names)} names were provided."
+        )
+
+    if len(channel_names) < n_channels:
+        print(
+            f"  Note: {len(channel_names)} names provided but {fov_name} has {n_channels} channels. "
+            f"Exporting the first {len(channel_names)} channels and ignoring the remaining "
+            f"{n_channels - len(channel_names)}."
+        )
+
+    return list(channel_names)
+
+
+
 def extract_channels_slide(
     slide_dir: str,
-    channel_names: List[str],
+    channel_names: Optional[List[str]],
 ) -> None:
     """
     Split channels for all tiles belonging to one slide.
@@ -77,9 +151,10 @@ def extract_channels_slide(
     ----------
     slide_dir : str
         Path to the slide subfolder containing Tiles/.
-    channel_names : list of str
-        Channel names in order. If count mismatches, falls back to channel1,
-        channel2, ... (matching Code1 behavior).
+    channel_names : list of str, optional
+        Channel names in order. If fewer names than channels are supplied,
+        only the leading channels are exported. If omitted, generic names are
+        used.
     """
     slide_dir = Path(slide_dir)
     tiles_dir = slide_dir / "Tiles"
@@ -107,15 +182,7 @@ def extract_channels_slide(
         fov_img = _squeeze_to_chw(fov_img, str(fov_file))
 
         n_channels = fov_img.shape[0]
-        if len(channel_names) != n_channels:
-            print(
-                f"  Warning: {len(channel_names)} names provided but "
-                f"{fov_name} has {n_channels} channels. "
-                f"Using channel1, channel2, ..."
-            )
-            actual_names = [f"channel{i+1}" for i in range(n_channels)]
-        else:
-            actual_names = channel_names
+        actual_names = _resolve_export_names(n_channels, channel_names, fov_name)
 
         for c_idx, name in enumerate(actual_names):
             out_path = fov_out_dir / f"{name}.tif"
@@ -124,9 +191,10 @@ def extract_channels_slide(
     print(f"[extract_channels] {slide_dir.name}: channel splitting complete.")
 
 
+
 def extract_channels_experiment(
     experiment_dir: str,
-    channel_names: List[str],
+    channel_names: Optional[List[str]],
 ) -> None:
     """
     Split channels for all slides in an experiment folder.
@@ -135,8 +203,9 @@ def extract_channels_experiment(
     ----------
     experiment_dir : str
         Root experiment folder.
-    channel_names : list of str
-        Channel names in order (must be consistent across all slides).
+    channel_names : list of str, optional
+        Channel names in order. If fewer names than channels are supplied,
+        only the leading channels are exported.
     """
     experiment_dir = Path(experiment_dir)
     slide_dirs = [

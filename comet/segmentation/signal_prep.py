@@ -151,7 +151,7 @@ def prepare_cellpose_inputs(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fov_folders = sorted(
-        [f for f in image_dir.iterdir() if f.is_dir()],
+        [f for f in image_dir.iterdir() if f.is_dir() and not f.name.startswith('.')],
         key=lambda p: int("".join(filter(str.isdigit, p.stem)) or "0"),
     )
 

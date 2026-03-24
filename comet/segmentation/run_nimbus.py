@@ -15,7 +15,6 @@ from typing import List, Optional
 def run_nimbus_slide(
     slide_dir: str,
     include_channels: List[str],
-    checkpoint: str = "V1.pt",
     batch_size: int = 4,
     test_time_aug: bool = True,
     quantile: float = 0.999,
@@ -96,7 +95,6 @@ def run_nimbus_slide(
         test_time_aug=test_time_aug,
         input_shape=[1024, 1024],
         device="auto",
-        checkpoint=checkpoint,
         output_dir=str(output_dir),
     )
     nimbus.check_inputs()

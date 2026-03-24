@@ -13,8 +13,8 @@ Developed in the **[Francis Chan Lab](https://francischanlab.com/)**, Liangzhu L
 | Improvement | Problem Solved |
 |---|---|
 | **Normalized signal fusion** (`signal_prep`) | Direct channel addition allows bright markers to dominate segmentation input; per-channel percentile normalization ensures equal contribution from each marker |
-| **Tile overlap deduplication** (`deduplication`) | CellposeSAM has no built-in tile stitching; cells in overlapping regions are double-counted without correction |
-| **Otsu × factor thresholding** (`threshold`) | Standard Otsu thresholding fails when positive cells are rare (<1%); a per-marker multiplicative correction factor adjusts classification stringency |
+| **Tile overlap deduplication** (`deduplication`) | Nimbus has no built-in tile stitching; cells in overlapping regions are double-counted without correction |
+| **Otsu × factor thresholding** (`threshold`) | Standard Otsu thresholding on predictions from Nimbus output fails when positive cells are rare (<1%); a per-marker multiplicative correction factor adjusts classification stringency |
 
 ---
 
@@ -44,6 +44,40 @@ pip install -e .
 
 ---
 
+## Notebook
+
+For interactive use, JupyterLab or Jupyter Notebook is recommended.
+
+The recommended end-to-end notebook is:
+
+```text
+./notebooks/1_COMET_Workflow.ipynb
+```
+
+This notebook walks through the full slide-level workflow from raw multiplex whole-slide images to final NIMBUS marker probabilities:
+
+1. Stage 1: inspect OME metadata from the first raw slide, confirm channel order, then run image tiling, channel extraction, and Cellpose input preparation
+2. Stage 2: run CellposeSAM segmentation on the 2-channel fused TIFF inputs
+3. Stage 3: remove edge-touching masks and deduplicate overlapping cells across neighboring FOVs
+4. Stage 4: run NIMBUS marker probability inference on the final masks and per-marker TIFFs
+
+The Stage 1 notebook flow is intentionally split into two user steps:
+- first print the metadata of the first raw slide
+- then let the user fill `CHANNEL_NAMES` manually before running preprocessing
+
+`CHANNEL_NAMES` must follow the raw acquisition order reported by the metadata inspection cell. If you only provide the first `N` names, COMET exports the first `N` raw channels and ignores the remaining trailing channels.
+
+The notebook expects raw slides to be placed under an experiment directory such as:
+
+```text
+data/example/
+|-- Slide1.ome.tif
+|-- Slide2.ome.tif
+|-- ...
+```
+
+After Stage 1, COMET creates one slide folder per raw image and writes tiled FOVs, per-marker TIFFs, and Cellpose inputs into the standard COMET directory structure used by the later stages.
+
 ## Quick Start
 
 ```python
@@ -58,61 +92,42 @@ comet.tile_experiment(
 )
 
 # Step 2: Extract channels (check channel order first)
-comet.print_channel_metadata("my_experiment/Patient1.ome.tif")
+comet.print_channel_metadata("my_experiment/Slide1.ome.tif")
 comet.extract_channels_experiment(
     experiment_dir="my_experiment",
-    channel_names=["DAPI", "NuclearMarker", "MemMarker1", "MemMarker2"],
+    channel_names=["DAPI", "NuclearMarker", "MemMarker1", "MemMarker2", "Marker"],
 )
 
 # Step 3: Prepare CellposeSAM input (normalized signal fusion)
 comet.prepare_cellpose_inputs(
-    base_dir="my_experiment/Patient1",
+    base_dir="my_experiment/Slide1",
     nuclear_markers=["DAPI", "NuclearMarker"],
     membrane_markers=["MemMarker1", "MemMarker2"],
 )
 
 # Step 4: Run CellposeSAM (GPU recommended)
-comet.run_cellpose_slide("my_experiment/Patient1")
+comet.run_cellpose_slide("my_experiment/Slide1")
 
 # Step 5: Border clearing + overlap deduplication
-comet.deduplicate_slide("my_experiment/Patient1")
+comet.deduplicate_slide("my_experiment/Slide1")
 
 # Step 6: NIMBUS marker probability scoring
 comet.run_nimbus_slide(
     slide_dir="my_experiment/Patient1",
-    include_channels=["MemMarker1", "MemMarker2", "NuclearMarker"],
+    include_channels=["MemMarker1", "MemMarker2", "NuclearMarker", "Marker"],
 )
 
 # Step 7: Classify and assign cell types
 result = comet.threshold_slide(
-    nimbus_csv="my_experiment/Patient1/nimbus_output/nimbus_cell_table.csv",
-    markers=["MemMarker1", "MemMarker2", "NuclearMarker"],
+    nimbus_csv="my_experiment/Slide1/nimbus_output/nimbus_cell_table.csv",
+    markers=["MemMarker1", "MemMarker2", "NuclearMarker", "Marker"],
     # col_map only needed if NIMBUS column names differ from Prob_{marker}
     # e.g. col_map={"MemMarker1": "Prob_Mem1"}
 )
 
 # Step 8: Export to QuPath
 comet.export_to_qupath(
-    classified_csv="my_experiment/Patient1/nimbus_output/nimbus_cell_table_classified.csv",
-)
-```
-
----
-
-## Marker naming and NIMBUS columns
-
-NIMBUS names probability columns as `Prob_{channel_name}`, where `channel_name` is whatever was passed to `include_channels`:
-
-```python
-# If you run NIMBUS with:
-include_channels=["CD3", "CD8a", "Marker"]
-# NIMBUS outputs: Prob_CD3, Prob_CD8a, Prob_Marker
-
-# Use col_map only if your NIMBUS output uses different names:
-result = comet.threshold_slide(
-    nimbus_csv="...",
-    markers=["CD3", "CD8a", "Marker"],
-    col_map={"CD8a": "Prob_CD8"},   # only if needed
+    classified_csv="my_experiment/Slide1/nimbus_output/nimbus_cell_table_classified.csv",
 )
 ```
 
@@ -120,48 +135,54 @@ result = comet.threshold_slide(
 
 ## Output layout
 
-```
+```text
 my_experiment/
-|-- Patient1.ome.tif
-`-- Patient1/
-    |-- fov_coordinates.csv           # tile positions in WSI coordinates
-    |-- Tiles/                        # multi-channel tiles
-    |   `-- FOV0.tif, FOV1.tif ...
-    |-- image_data/                   # per-marker single-channel files
-    |   `-- FOV0/
-    |       |-- DAPI.tif
-    |       `-- Marker.tif ...
-    |-- segmentation/
-    |   |-- cellpose_input/           # 2-channel fused input
-    |   |-- cellpose_output/          # raw CellposeSAM masks (intermediate)
-    |   |-- deepcell_output/          # deduplicated masks (NIMBUS input)
-    |   `-- deepcell_output_bak/      # backup of pre-dedup masks
-    `-- nimbus_output/
-        |-- nimbus_cell_table.csv               # NIMBUS probabilities
-        |-- nimbus_cell_table_classified.csv    # final cell table with Cell_Type
-        |-- thresholds_used.csv                 # thresholds applied
-        `-- threshold_distributions.png         # QC plots
+|-- Slide1.ome.tif
+|-- Slide1/
+|   |-- fov_coordinates.csv
+|   |-- Tiles/
+|   |   |-- FOV0.tif, FOV1.tif, ...
+|   |-- image_data/
+|   |   |-- FOV0/
+|   |   |   |-- DAPI.tif
+|   |   |   |-- Marker.tif
+|   |   |   |-- ...
+|   |-- segmentation/
+|   |   |-- cellpose_input/          # 2-channel fused TIFF inputs for CellposeSAM
+|   |   |-- cellpose_output/         # raw Cellpose output artifacts
+|   |   |-- deepcell_output/         # renamed whole-cell masks; deduplicated in place later
+|   |   |-- deepcell_output_bak/     # backup created during deduplication
+|   |-- nimbus_output/
+|   |   |-- nimbus_cell_table.csv
+|   |   |-- nimbus_cell_table_classified.csv
+|   |   |-- thresholds_used.csv
+|   |   |-- threshold_distributions.png
 ```
 
 ---
 
 ## Repository structure
 
-```
+```text
 comet/
 |-- __init__.py
 |-- preprocessing/
+|   |-- __init__.py
 |   |-- tile_split.py       # WSI tiling
-|   `-- channel_extract.py  # channel demultiplexing
+|   |-- channel_extract.py  # channel extraction and metadata-based channel handling
+|   |-- pipeline.py         # notebook-facing Stage 1 helpers
 |-- segmentation/
+|   |-- __init__.py
 |   |-- signal_prep.py      # normalized signal fusion
 |   |-- run_cellpose.py     # CellposeSAM wrapper
 |   |-- deduplication.py    # border clearing + overlap deduplication
-|   `-- run_nimbus.py       # NIMBUS wrapper
+|   |-- run_nimbus.py       # NIMBUS wrapper
 |-- classification/
-|   `-- threshold.py        # Otsu × factor thresholding + cell typing
-`-- export/
-    `-- qupath_export.py    # QuPath TSV export
+|   |-- __init__.py
+|   |-- threshold.py        # Otsu × factor thresholding + cell typing
+|-- export/
+|   |-- __init__.py
+|   |-- qupath_export.py    # QuPath TSV export
 ```
 
 ---
@@ -176,8 +197,7 @@ COMET is open for community use. If you encounter bugs, have questions, or want 
 
 If you use COMET in your research, please cite:
 
-> [Spatial niche regulates IL-10–dependent efferocytosis during resolution of intestinal tissue inflammation] — Francis Chan Lab, Liangzhu Laboratory, Zhejiang University.
-> Code will be made available upon publication.
+> [An IL-10 Driven Spatial Niche Regulates Efferocytosis During Resolution of Intestinal Tissue Inflammation] — Francis Chan Lab, Liangzhu Laboratory, Zhejiang University.
 
 ---
 
