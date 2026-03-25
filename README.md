@@ -133,6 +133,32 @@ comet.export_to_qupath(
 
 ---
 
+## QuPath integration
+
+COMET also includes a QuPath script for reconstructing whole-slide detections directly from the final COMET outputs:
+
+```text
+./Qupath/Import COMET masks and NIMBUS predictions into QuPath.groovy
+```
+
+This script is intended for the final QuPath-side step after segmentation, deduplication, and NIMBUS inference are complete. It uses:
+
+- `fov_coordinates.csv` to place each field of view back into whole-slide coordinates
+- `segmentation/deepcell_output/` to import the final whole-cell masks
+- `nimbus_output/nimbus_cell_table.csv` to attach NIMBUS prediction values to each imported cell as QuPath measurements
+
+Typical usage in QuPath:
+
+1. Open the corresponding whole-slide image.
+2. Edit the `slideDir` variable in the script so it points to the COMET slide output directory, for example `my_experiment/Slide1`.
+3. Run `Import COMET masks and NIMBUS predictions into QuPath.groovy` from the QuPath script editor.
+
+After import, each cell detection in QuPath retains the NIMBUS-derived prediction columns as measurements. These imported prediction values can be used for downstream manual gating, measurement-based filtering, or additional cell classification steps within QuPath.
+
+If you want to refine phenotyping interactively, QuPath can be used to create new PathClasses, threshold prediction columns, or define additional rule-based cell classes on top of the imported NIMBUS predictions.
+
+---
+
 ## Output layout
 
 ```text
