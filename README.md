@@ -44,39 +44,42 @@ pip install -e .
 
 ---
 
-## Notebook
+## Notebooks
 
 For interactive use, JupyterLab or Jupyter Notebook is recommended.
 
-The recommended end-to-end notebook is:
+COMET now provides two notebook entry points, each with a separate responsibility.
+
+### Notebook 1: preprocessing, segmentation, deduplication, and NIMBUS inference
 
 ```text
 ./notebooks/1_COMET_Workflow.ipynb
 ```
 
-This notebook walks through the full slide-level workflow from raw multiplex whole-slide images to final NIMBUS marker probabilities:
+Use notebook 1 to move from raw multiplex whole-slide images to `nimbus_cell_table.csv`.
 
+It covers:
 1. Stage 1: inspect OME metadata from the first raw slide, confirm channel order, then run image tiling, channel extraction, and Cellpose input preparation
 2. Stage 2: run CellposeSAM segmentation on the 2-channel fused TIFF inputs
 3. Stage 3: remove edge-touching masks and deduplicate overlapping cells across neighboring FOVs
 4. Stage 4: run NIMBUS marker probability inference on the final masks and per-marker TIFFs
 
-The Stage 1 notebook flow is intentionally split into two user steps:
-- first print the metadata of the first raw slide
-- then let the user fill `CHANNEL_NAMES` manually before running preprocessing
-
-`CHANNEL_NAMES` must follow the raw acquisition order reported by the metadata inspection cell. If you only provide the first `N` names, COMET exports the first `N` raw channels and ignores the remaining trailing channels.
-
-The notebook expects raw slides to be placed under an experiment directory such as:
+### Notebook 2: thresholding, cell classification, and optional CSV export
 
 ```text
-data/example/
-|-- Slide1.ome.tif
-|-- Slide2.ome.tif
-|-- ...
+./notebooks/2_Cell_Classification.ipynb
 ```
 
-After Stage 1, COMET creates one slide folder per raw image and writes tiled FOVs, per-marker TIFFs, and Cellpose inputs into the standard COMET directory structure used by the later stages.
+Use notebook 2 after notebook 1 has created `nimbus_cell_table.csv` for each slide.
+
+It covers:
+1. Previewing marker columns from one slide and confirming the marker names to threshold
+2. Computing Otsu x factor thresholds and reviewing threshold plots
+3. Applying optional mutex correction for marker pairs that should not remain double-positive
+4. Assigning ordered cell types, where the first matched rule becomes `Cell_Type`
+5. Writing `nimbus_cell_table_classified.csv` and optional `nimbus_cell_table_classified_qupath.csv`
+
+When defining `cell_type_rules`, place more specific classes before broader parent classes. The first matched rule becomes `Cell_Type`; later matches are written to `Additional_Labels`.
 
 ## Quick Start
 
@@ -120,12 +123,28 @@ comet.run_nimbus_slide(
 # Step 7: Classify and assign cell types
 result = comet.threshold_slide(
     nimbus_csv="my_experiment/Slide1/nimbus_output/nimbus_cell_table.csv",
-    markers=["MemMarker1", "MemMarker2", "NuclearMarker", "Marker"],
-    # col_map only needed if NIMBUS column names differ from Prob_{marker}
-    # e.g. col_map={"MemMarker1": "Prob_Mem1"}
+    markers=["CD3", "CD4", "CD8a", "CD68", "EOMES"],
+    # col_map only needed if NIMBUS column names differ from marker names
+    # e.g. col_map={"TCR": "TCRbeta"}
+    # TCR -> the name you want; TCRbeta -> the name used in nimbus column
+    mutex_pairs=[("CD4", "CD8a"), ("CD3", "CD68")],
+    # Optionally applies mutual-exclusion correction to configured marker pairs.
+    cell_type_rules=[
+        {"name": "CD4_TCell", "positive": ["CD3", "CD4"], "negative": ["CD68", "CD8a"]},
+        {"name": "CD8_TCell", "positive": ["CD3", "CD8a"], "negative": ["CD68", "CD4"]},
+        {"name": "TCell", "positive": ["CD3"], "negative": ["CD68"]},
+        {"name": "EOMES_Pos", "positive": ["EOMES"], "negative": []},
+    ],
 )
 
-# Step 8: Export to QuPath
+# Cell-type rule behavior:
+# - Rules are evaluated in the order you provide.
+# - Put more specific classes before broader parent classes.
+# - The first matched rule becomes Cell_Type.
+# - Any later matched rules are stored in Additional_Labels as a semicolon-delimited string.
+# - Cells that match no rule keep Cell_Type="Unknown".
+
+# Step 8: Export a fov/label-keyed CSV for downstream review or QuPath-side integration
 comet.export_to_qupath(
     classified_csv="my_experiment/Slide1/nimbus_output/nimbus_cell_table_classified.csv",
 )
@@ -135,13 +154,15 @@ comet.export_to_qupath(
 
 ## QuPath integration
 
-COMET also includes a QuPath script for reconstructing whole-slide detections directly from the final COMET outputs:
+COMET includes two QuPath-side scripts, depending on whether you want to import raw NIMBUS measurements or final COMET cell classes.
+
+### Script 1: import masks plus NIMBUS measurements
 
 ```text
 ./Qupath/Import COMET masks and NIMBUS predictions into QuPath.groovy
 ```
 
-This script is intended for the final QuPath-side step after segmentation, deduplication, and NIMBUS inference are complete. It uses:
+Use this script after segmentation, deduplication, and NIMBUS inference are complete. It uses:
 
 - `fov_coordinates.csv` to place each field of view back into whole-slide coordinates
 - `segmentation/deepcell_output/` to import the final whole-cell masks
@@ -153,9 +174,34 @@ Typical usage in QuPath:
 2. Edit the `slideDir` variable in the script so it points to the COMET slide output directory, for example `my_experiment/Slide1`.
 3. Run `Import COMET masks and NIMBUS predictions into QuPath.groovy` from the QuPath script editor.
 
-After import, each cell detection in QuPath retains the NIMBUS-derived prediction columns as measurements. These imported prediction values can be used for downstream manual gating, measurement-based filtering, or additional cell classification steps within QuPath.
+After import, each cell detection in QuPath retains the NIMBUS-derived prediction columns as measurements. These imported values can be used for manual gating, measurement-based filtering, or ad hoc rule building inside QuPath.
 
-If you want to refine phenotyping interactively, QuPath can be used to create new PathClasses, threshold prediction columns, or define additional rule-based cell classes on top of the imported NIMBUS predictions.
+### Script 2: import masks plus final COMET class labels
+
+```text
+./Qupath/Import COMET masks and cell class into Qupath.groovy
+```
+
+Use this script after notebook 2 has generated `nimbus_cell_table_classified_qupath.csv`. It uses:
+
+- `fov_coordinates.csv` to place each field of view back into whole-slide coordinates
+- `segmentation/deepcell_output/` to import the final whole-cell masks
+- `nimbus_output/nimbus_cell_table_classified_qupath.csv` to assign the exported `Class` values to QuPath detections
+
+This script is intended for cases where you want QuPath to open directly with final COMET class labels already assigned, rather than importing the raw NIMBUS probabilities first.
+
+It now includes two configuration switches:
+
+- `importClass = true/false` controls whether the `Class` column is assigned as the QuPath PathClass
+- `importMeasurements = true/false` controls whether numeric columns from `nimbus_cell_table_classified_qupath.csv` are also imported as QuPath measurements
+
+This makes script 2 usable in three modes:
+
+- class only
+- measurements only
+- class plus measurements
+
+If you want to refine classification interactively, QuPath can be used to create new PathClasses, threshold prediction columns, or define additional rule-based cell classes on top of either imported NIMBUS measurements or imported COMET class labels.
 
 ---
 
@@ -181,6 +227,7 @@ my_experiment/
 |   |-- nimbus_output/
 |   |   |-- nimbus_cell_table.csv
 |   |   |-- nimbus_cell_table_classified.csv
+|   |   |-- nimbus_cell_table_classified_qupath.csv   # optional
 |   |   |-- thresholds_used.csv
 |   |   |-- threshold_distributions.png
 ```
@@ -208,7 +255,7 @@ comet/
 |   |-- threshold.py        # Otsu × factor thresholding + cell typing
 |-- export/
 |   |-- __init__.py
-|   |-- qupath_export.py    # QuPath TSV export
+|   |-- qupath_export.py    # QuPath CSV export
 ```
 
 ---

@@ -1,35 +1,28 @@
 """
-threshold.py - COMET classification step 1
+threshold.py - COMET classification utilities
 
-Classifies each segmented cell as positive or negative for each marker
-using OTSU * factor thresholding, then assigns cell type labels.
+Utilities for converting per-cell NIMBUS marker scores into downstream
+classification outputs.
 
-Algorithm (from Code6):
-    1. For each marker, compute OTSU threshold on raw NIMBUS probabilities.
-    2. Final threshold = otsu_val * factor
-       (factor < 1.0 lowers the bar; factor > 1.0 raises it)
-    3. CD4/CD8 mutual exclusion: if a cell is double-positive for both,
-       flip the weaker signal to negative.
-    4. Assign cell type labels based on combinatorial marker status.
+This module supports four stages:
+    1. Compute per-marker thresholds from NIMBUS scores using OTSU * factor.
+    2. Plot threshold overlays for manual review.
+    3. Convert marker scores into is_Pos_<marker> calls, with optional
+       mutual-exclusion correction for user-specified marker pairs.
+    4. Apply ordered user-defined class rules to produce a primary Cell_Type
+       plus any secondary matches stored in Additional_Labels.
 
-No arcsinh transform is applied. NIMBUS outputs probabilities in [0, 1];
-arcsinh was only used for visualization in earlier analyses and does not
-improve thresholding accuracy on probability data.
+Key behavior:
+    - NIMBUS columns are looked up by marker name unless col_map overrides them.
+    - Per-marker factors default to 1.0 unless explicitly provided.
+    - For a mutex pair, only the weaker of the two raw marker scores is flipped.
+    - For cell_type_rules, the first matched rule becomes Cell_Type and any
+      later matches are concatenated into Additional_Labels. Place more
+      specific rules before broader parent classes.
+    - If no class rule matches, Cell_Type defaults to "Unknown".
 
-Default factors (from Code6 grid search):
-    CD3=1.0, TCR=0.6, EOMES=1.6, CD4=0.4, CD8a=0.5, CD45=1.0
-
-NIMBUS column mapping (Prob_ prefix, e.g. CD8a -> Prob_CD8a, TCR -> Prob_TCR):
-    column_map = {
-        'CD3':   'Prob_CD3',
-        'CD4':   'Prob_CD4',
-        'CD8a':  'Prob_CD8a',
-        'TCR':   'Prob_TCR',
-        'EOMES': 'Prob_EOMES',
-        'CD45':  'Prob_CD45',
-    }
-    Pass this as the col_map argument if your NIMBUS output uses this naming.
-    If your columns are already named CD3, CD4, etc., leave col_map=None.
+No arcsinh transform is applied. NIMBUS outputs are expected to be probability-
+like scores in [0, 1], and thresholding is performed directly on those values.
 """
 
 import numpy as np
@@ -37,32 +30,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from skimage.filters import threshold_otsu
-from typing import Dict, List, Optional
-
-
-# ---------------------------------------------------------------------------
-# Default configuration matching Code6
-# ---------------------------------------------------------------------------
-
-DEFAULT_FACTORS: Dict[str, float] = {
-    "CD3":   1.0,
-    "TCR":   0.6,
-    "EOMES": 1.6,
-    "CD4":   0.4,
-    "CD8a":  0.5,
-    "CD45":  1.0,
-}
-
-# NIMBUS output column name for each marker
-DEFAULT_COL_MAP: Dict[str, str] = {
-    "CD3":   "Prob_CD3",
-    "CD4":   "Prob_CD4",
-    "CD8a":  "Prob_CD8a",
-    "TCR":   "Prob_TCR",
-    "EOMES": "Prob_EOMES",
-    "CD45":  "Prob_CD45",
-}
-
+from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Step 1: Compute OTSU * factor threshold per marker
@@ -116,14 +84,14 @@ def compute_thresholds(
     cell_table : pd.DataFrame
         NIMBUS cell table.
     markers : list of str
-        Marker names to threshold (e.g. ['CD3', 'CD4', 'CD8a', 'TCR', 'EOMES']).
+        Marker names to threshold.
     factors : dict, optional
-        Per-marker factor values. Defaults to DEFAULT_FACTORS.
+        Per-marker factor values. Unspecified markers default to 1.0.
         Only need to supply markers you want to override.
     col_map : dict, optional
         Mapping from marker name to NIMBUS column name.
-        Example: {'CD8a': 'Prob_CD8'} if your NIMBUS output uses Prob_CD8 instead of Prob_CD8a.
-        If None and DEFAULT_COL_MAP covers your markers, leave as None.
+        Example: {'TCR': 'TCRbeta'} if your NIMBUS output uses TCRbeta instead of TCR.
+        If None, markers are looked up by their own names.
 
     Returns
     -------
@@ -137,7 +105,7 @@ def compute_thresholds(
     results = {}
     for marker in markers:
         col_name = col_map.get(marker, marker)
-        factor = factors.get(marker, DEFAULT_FACTORS.get(marker, 1.0))
+        factor = factors.get(marker, 1.0)
 
         if col_name not in cell_table.columns:
             print(f"  [threshold] Warning: column '{col_name}' not found, skipping {marker}.")
@@ -235,19 +203,20 @@ def plot_marker_thresholds(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Classify markers (with CD4/CD8 mutex correction)
+# Step 3: Classify markers (with optional mutex correction)
 # ---------------------------------------------------------------------------
 
 def classify_all_markers(
     cell_table: pd.DataFrame,
     threshold_info: Dict[str, dict],
+    mutex_pairs: Optional[List[Tuple[str, str]]] = None,
 ) -> pd.DataFrame:
     """
     Classify cells as positive/negative for each marker.
 
-    Applies CD4/CD8 mutual exclusion correction:
-    If a cell is double-positive for both CD4 and CD8a, the one with the
-    lower raw probability is flipped to negative. This matches Code6 logic.
+    Optionally applies mutual-exclusion correction to configured marker pairs.
+    For each pair, if a cell is double-positive for both markers, the one with
+    the lower raw probability is flipped to negative.
 
     Parameters
     ----------
@@ -255,12 +224,15 @@ def classify_all_markers(
         NIMBUS cell table.
     threshold_info : dict
         Output of compute_thresholds().
+    mutex_pairs : list of tuple(str, str), optional
+        Marker pairs that should not remain double-positive.
+        Example: [('CD4', 'CD8a'), ('CD3', 'CD68')]
 
     Returns
     -------
     pd.DataFrame
         Cell table with is_Pos_<marker> boolean columns appended.
-        Also adds Mutex_Correction column if both CD4 and CD8a are present.
+        Adds Mutex_Correction if any configured pair is corrected.
     """
     result = cell_table.copy()
 
@@ -277,44 +249,67 @@ def classify_all_markers(
             f"{n_pos}/{len(result)} positive ({pct:.2f}%)"
         )
 
-    # CD4/CD8 mutual exclusion correction
-    has_cd4 = "is_Pos_CD4" in result.columns
-    has_cd8 = "is_Pos_CD8a" in result.columns
-    if has_cd4 and has_cd8:
-        cd4_col = threshold_info["CD4"]["col_name"]
-        cd8_col = threshold_info["CD8a"]["col_name"]
+    if mutex_pairs:
+        result["Mutex_Correction"] = "None"
 
-        is_dp = result["is_Pos_CD4"] & result["is_Pos_CD8a"]
-        result["Mutex_Correction"] = is_dp.map({True: "Corrected_DP", False: "None"})
+        for marker_a, marker_b in mutex_pairs:
+            pos_a = f"is_Pos_{marker_a}"
+            pos_b = f"is_Pos_{marker_b}"
 
-        # Flip the weaker one to negative
-        cd4_weaker = is_dp & (result[cd4_col] < result[cd8_col])
-        cd8_weaker = is_dp & (result[cd8_col] < result[cd4_col])
-        result.loc[cd4_weaker, "is_Pos_CD4"]  = False
-        result.loc[cd8_weaker, "is_Pos_CD8a"] = False
+            if marker_a not in threshold_info or marker_b not in threshold_info:
+                print(
+                    f"  [threshold] Warning: mutex pair ({marker_a}, {marker_b}) skipped "
+                    f"because one or both markers were not thresholded."
+                )
+                continue
 
-        n_corrected = int(is_dp.sum())
-        print(f"  [threshold] CD4/CD8a mutex correction: {n_corrected} double-positive cells corrected")
+            if pos_a not in result.columns or pos_b not in result.columns:
+                print(
+                    f"  [threshold] Warning: mutex pair ({marker_a}, {marker_b}) skipped "
+                    f"because one or both positivity columns are missing."
+                )
+                continue
+
+            col_a = threshold_info[marker_a]["col_name"]
+            col_b = threshold_info[marker_b]["col_name"]
+            is_dp = result[pos_a] & result[pos_b]
+
+            if not is_dp.any():
+                print(f"  [threshold] {marker_a}/{marker_b} mutex correction: 0 double-positive cells corrected")
+                continue
+
+            a_weaker = is_dp & (result[col_a] < result[col_b])
+            b_weaker = is_dp & (result[col_b] < result[col_a])
+            result.loc[a_weaker, pos_a] = False
+            result.loc[b_weaker, pos_b] = False
+
+            pair_label = f"Corrected_{marker_a}_{marker_b}"
+            corrected_mask = a_weaker | b_weaker
+            result.loc[corrected_mask, "Mutex_Correction"] = result.loc[
+                corrected_mask, "Mutex_Correction"
+            ].map(lambda x: pair_label if x == "None" else f"{x};{pair_label}")
+
+            n_corrected = int(corrected_mask.sum())
+            print(
+                f"  [threshold] {marker_a}/{marker_b} mutex correction: "
+                f"{n_corrected} double-positive cells corrected"
+            )
 
     return result
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Assign cell type labels
+# Step 4: Assign Cell_Type and Additional_Labels
 # ---------------------------------------------------------------------------
 
-def assign_cell_types(cell_table: pd.DataFrame) -> pd.DataFrame:
+def assign_cell_types(
+    cell_table: pd.DataFrame,
+    cell_type_rules: Optional[List[dict]] = None,
+    default_label: str = "Unknown",
+    additional_labels_col: str = "Additional_Labels",
+) -> pd.DataFrame:
     """
-    Assign Cell_Type label based on marker status columns.
-
-    Classification hierarchy (from Code6):
-        CD3+ & TCR-                                         -> gd+T
-        CD3+ & TCR+ & CD4+                                  -> ab+CD4+T
-        CD3+ & TCR+ & CD8a+                                 -> ab+CD8+T
-        CD3- & CD45+                                        -> CD45+CD3-
-        CD3+ & TCR+ & CD4- & CD8a- & EOMES-                -> ab+EOMES-DNT
-        CD3+ & TCR+ & CD4- & CD8a- & EOMES+                -> ab+EOMES+DNT
-        CD45+  (fallback)                                   -> CD45+ Cells
+    Assign Cell_Type labels using user-provided class rules.
 
     Requires is_Pos_* columns from classify_all_markers().
 
@@ -322,53 +317,71 @@ def assign_cell_types(cell_table: pd.DataFrame) -> pd.DataFrame:
     ----------
     cell_table : pd.DataFrame
         Cell table with is_Pos_* columns.
+    cell_type_rules : list of dict, optional
+        Ordered class rules. Each rule should define:
+        {"name": str, "positive": [markers], "negative": [markers]}
+        Because the first matched rule becomes Cell_Type, place more specific
+        rules before broader parent classes.
+        Example: [{"name": "MyClass", "positive": ["CD3"], "negative": ["CD68"]}]
+    default_label : str, optional
+        Label assigned to cells that do not match any class rule.
+    additional_labels_col : str, optional
+        Column name used to store secondary rule matches as a semicolon-delimited string.
 
     Returns
     -------
     pd.DataFrame
-        Cell table with Cell_Type column appended.
+        Cell table with Cell_Type and Additional_Labels columns appended.
     """
     result = cell_table.copy()
+    primary_labels = pd.Series(default_label, index=result.index, dtype="object")
+    additional_labels = pd.Series("", index=result.index, dtype="object")
 
-    def col(marker: str) -> pd.Series:
-        c = f"is_Pos_{marker}"
-        if c not in result.columns:
-            return pd.Series(False, index=result.index)
-        return result[c]
+    if cell_type_rules:
+        matched_labels = pd.Series([[] for _ in range(len(result))], index=result.index, dtype="object")
 
-    cd3   = col("CD3")
-    tcr   = col("TCR")
-    cd4   = col("CD4")
-    cd8a  = col("CD8a")
-    eomes = col("EOMES")
-    cd45  = col("CD45")
+        for rule in cell_type_rules:
+            name = rule.get("name", "CellType")
+            pos_cols = [f"is_Pos_{m}" for m in rule.get("positive", [])]
+            neg_cols = [f"is_Pos_{m}" for m in rule.get("negative", [])]
 
-    conditions = [
-        (cd3 & ~tcr,                             "gd+T"),
-        (cd3 & tcr & cd4,                        "ab+CD4+T"),
-        (cd3 & tcr & cd8a,                       "ab+CD8+T"),
-        (~cd3 & cd45,                            "CD45+CD3-"),
-        (cd3 & tcr & ~cd4 & ~cd8a & ~eomes,      "ab+EOMES-DNT"),
-        (cd3 & tcr & ~cd4 & ~cd8a & eomes,       "ab+EOMES+DNT"),
-        (cd45,                                   "CD45+ Cells"),
-    ]
+            mask = pd.Series(True, index=result.index)
+            for c in pos_cols:
+                if c in result.columns:
+                    mask &= result[c]
+                else:
+                    mask &= False
+            for c in neg_cols:
+                if c in result.columns:
+                    mask &= ~result[c]
+                else:
+                    mask &= False
 
-    cell_types = pd.Series("Unknown", index=result.index)
-    # Apply in reverse so higher-priority rules overwrite lower ones
-    for mask, label in reversed(conditions):
-        cell_types[mask] = label
+            for idx in result.index[mask]:
+                matched_labels.at[idx] = matched_labels.at[idx] + [name]
 
-    result["Cell_Type"] = cell_types
+        matched_any = matched_labels.map(bool)
+        primary_labels.loc[matched_any] = matched_labels.loc[matched_any].map(lambda labels: labels[0])
+        additional_labels.loc[matched_any] = matched_labels.loc[matched_any].map(
+            lambda labels: ";".join(labels[1:]) if len(labels) > 1 else ""
+        )
+    else:
+        print("  [threshold] No cell_type_rules provided; assigning default Cell_Type only.")
 
-    # Summary
+    result["Cell_Type"] = primary_labels
+    result[additional_labels_col] = additional_labels
+
     print("\n  [threshold] Cell type summary:")
     counts = result["Cell_Type"].value_counts()
     total = len(result)
     for ct, n in counts.items():
         print(f"    {ct}: {n} ({100*n/total:.2f}%)")
 
-    return result
+    if additional_labels.ne("").any():
+        n_multi = int(additional_labels.ne("").sum())
+        print(f"  [threshold] Cells with additional labels: {n_multi}/{len(result)}")
 
+    return result
 
 # ---------------------------------------------------------------------------
 # Full pipeline entry point
@@ -379,8 +392,9 @@ def threshold_slide(
     markers: List[str],
     factors: Optional[Dict[str, float]] = None,
     col_map: Optional[Dict[str, str]] = None,
+    mutex_pairs: Optional[List[Tuple[str, str]]] = None,
+    cell_type_rules: Optional[List[dict]] = None,
     manual_thresholds: Optional[Dict[str, float]] = None,
-    phenotypes: Optional[List[dict]] = None,
     output_csv: Optional[str] = None,
     plot: bool = True,
 ) -> pd.DataFrame:
@@ -391,8 +405,8 @@ def threshold_slide(
         1. Compute per-marker thresholds (OTSU * factor)
         2. Apply any manual overrides
         3. Plot distributions for visual verification
-        4. Classify all markers (with CD4/CD8 mutex correction)
-        5. Assign cell type labels
+        4. Classify all markers (with optional mutex correction)
+        5. Optionally assign Cell_Type labels using user-provided class rules
         6. Save results and thresholds used
 
     Parameters
@@ -400,21 +414,29 @@ def threshold_slide(
     nimbus_csv : str
         Path to NIMBUS cell table CSV.
     markers : list of str
-        Markers to threshold (e.g. ['CD3', 'CD4', 'CD8a', 'TCR', 'EOMES', 'CD45']).
+        Markers to threshold.
     factors : dict, optional
-        Per-marker factor values. Unspecified markers use DEFAULT_FACTORS.
+        Per-marker factor values. Unspecified markers default to 1.0.
         Example: {'EOMES': 1.6, 'CD4': 0.4}
     col_map : dict, optional
         Marker -> NIMBUS column name mapping.
-        Only needed if NIMBUS output column names differ from DEFAULT_COL_MAP.
-        Example: {'CD8a': 'Prob_CD8'} if your NIMBUS output uses Prob_CD8 instead of Prob_CD8a.
-        Defaults to DEFAULT_COL_MAP for known markers, else uses marker name directly.
+        Only needed if NIMBUS output column names differ from the marker names.
+        Example: {'TCR': 'TCRbeta'} if your NIMBUS output uses TCRbeta instead of TCR.
+        If None, markers are looked up by their own names.
+    mutex_pairs : list of tuple(str, str), optional
+        Marker pairs that should not remain double-positive.
+        Example: [('CD4', 'CD8a'), ('CD3', 'CD68')]
+    cell_type_rules : list of dict, optional
+        Ordered Cell_Type rules supplied by the user/frontend.
+        Each rule should define:
+        {"name": str, "positive": [markers], "negative": [markers]}
+        The first matched rule becomes Cell_Type; any later matches are stored
+        in Additional_Labels. Place more specific rules before broader parent
+        classes.
+        Example: [{"name": "MyClass", "positive": ["CD3"], "negative": ["CD68"]}]
     manual_thresholds : dict, optional
         Override computed thresholds for specific markers (post-visualization).
         Example: {'EOMES': 0.42}
-    phenotypes : list of dict, optional
-        Additional custom phenotype definitions beyond default cell types.
-        Each: {"name": str, "positive": [markers], "negative": [markers]}
     output_csv : str, optional
         Save classified table here.
         Defaults to nimbus_csv stem + '_classified.csv'.
@@ -424,19 +446,14 @@ def threshold_slide(
     Returns
     -------
     pd.DataFrame
-        Classified cell table with is_Pos_* and Cell_Type columns.
+        Classified cell table with is_Pos_*, Cell_Type, and Additional_Labels columns.
     """
     print(f"[threshold] Loading: {nimbus_csv}")
     cell_table = pd.read_csv(nimbus_csv)
 
-    # Build effective col_map: fill from DEFAULT_COL_MAP for known markers
-    effective_col_map = {m: DEFAULT_COL_MAP[m] for m in markers if m in DEFAULT_COL_MAP}
-    if col_map:
-        effective_col_map.update(col_map)
-
     # Step 1: Compute thresholds
     print("[threshold] Computing OTSU * factor thresholds ...")
-    threshold_info = compute_thresholds(cell_table, markers, factors, effective_col_map)
+    threshold_info = compute_thresholds(cell_table, markers, factors, col_map)
 
     # Step 2: Manual overrides
     if manual_thresholds:
@@ -454,29 +471,11 @@ def threshold_slide(
 
     # Step 4: Classify
     print("[threshold] Classifying markers ...")
-    cell_table = classify_all_markers(cell_table, threshold_info)
+    cell_table = classify_all_markers(cell_table, threshold_info, mutex_pairs=mutex_pairs)
 
     # Step 5: Cell types
     print("[threshold] Assigning cell types ...")
-    cell_table = assign_cell_types(cell_table)
-
-    # Step 5b: Additional custom phenotypes if provided
-    if phenotypes:
-        for ph in phenotypes:
-            name = ph.get("name", "phenotype")
-            pos_cols = [f"is_Pos_{m}" for m in ph.get("positive", [])]
-            neg_cols = [f"is_Pos_{m}" for m in ph.get("negative", [])]
-            mask = pd.Series(True, index=cell_table.index)
-            for c in pos_cols:
-                if c in cell_table.columns:
-                    mask &= cell_table[c]
-            for c in neg_cols:
-                if c in cell_table.columns:
-                    mask &= ~cell_table[c]
-            cell_table[name] = mask
-            n = mask.sum()
-            pct = 100 * n / len(cell_table) if len(cell_table) > 0 else 0
-            print(f"  [threshold] {name}: {n}/{len(cell_table)} ({pct:.3f}%)")
+    cell_table = assign_cell_types(cell_table, cell_type_rules=cell_type_rules)
 
     # Step 6: Save
     if output_csv is None:
