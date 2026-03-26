@@ -64,6 +64,23 @@ It covers:
 3. Stage 3: remove edge-touching masks and deduplicate overlapping cells across neighboring FOVs
 4. Stage 4: run NIMBUS marker probability inference on the final masks and per-marker TIFFs
 
+#### NIMBUS checkpoint troubleshooting
+
+Current NIMBUS releases try to download the latest model checkpoint from the official Hugging Face repository:
+
+```text
+https://huggingface.co/JLrumberger/Nimbus-Inference
+```
+
+If that automatic download fails on your machine, manually download `V1.pt` from the official NIMBUS source and place it in the local `nimbus_inference/assets/` directory used by your Python environment. Common locations are:
+
+```text
+<conda-env>/lib/python3.x/site-packages/nimbus_inference/assets/V1.pt
+<Nimbus-Inference-repo>/src/nimbus_inference/assets/V1.pt   # editable install
+```
+
+COMET does not redistribute third-party NIMBUS checkpoint files.
+
 ### Notebook 2: thresholding, cell classification, and optional CSV export
 
 ```text

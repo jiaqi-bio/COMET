@@ -33,8 +33,6 @@ def run_nimbus_slide(
         Writes: nimbus_output/nimbus_cell_table.csv
     include_channels : list of str
         Channel names to classify (must match image_data/ subdirectory names).
-    checkpoint : str
-        NIMBUS model checkpoint filename (default 'V1.pt').
     batch_size : int
         Batch size (default 4; reduce if GPU OOM).
     test_time_aug : bool
