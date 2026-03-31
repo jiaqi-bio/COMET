@@ -112,8 +112,8 @@ try {
 def fovNameList = csvDataCoords.get('FOV_Name')
 def xList = csvDataCoords.get('X')
 def yList = csvDataCoords.get('Y')
-def wList = csvDataCoords.get('W')
-def hList = csvDataCoords.get('H')
+def wList = csvDataCoords.get('Width')
+def hList = csvDataCoords.get('Height')
 
 if (fovNameList == null || xList == null || yList == null || wList == null || hList == null) {
     print "[ERROR] The coordinate CSV must contain 'FOV_Name', 'X', 'Y', 'W', and 'H' columns."
