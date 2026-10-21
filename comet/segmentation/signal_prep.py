@@ -3,11 +3,11 @@ signal_prep.py - COMET segmentation step 1
 Normalizes and fuses nuclear + membrane channel signals into a
 2-channel input image for CellposeSAM.
 
-COMET improvement: per-channel percentile normalization before fusion
-ensures nuclear markers (e.g. DAPI, EOMES) and membrane markers
-(e.g. CD3, CD4) contribute equally.
+COMET improvement: per-channel percentile normalization followed by equal-weight
+averaging balances marker contributions without clipping their sum.
 
-Output: segmentation/cellpose_input/<FOV_Name>.tiff  [2, H, W] uint16
+Output: segmentation/cellpose_input/<FOV_Name>.tiff  [2, H, W] float32
+Normalized outputs are in [0, 1]; unnormalized outputs retain raw intensity sums.
 """
 
 import numpy as np
@@ -67,7 +67,7 @@ def prepare_cellpose_input_fov(
     fov_path : str
         Directory containing per-channel tiff files (e.g. image_data/FOV0/).
     output_path : str
-        Full path for the output 2-channel tiff (e.g. cellpose_input/FOV0.tiff).
+        Full path for the output 2-channel float32 tiff (e.g. cellpose_input/FOV0.tiff).
     nuclear_markers : list of str
         Marker names to fuse into nuclear channel (channel 0).
     membrane_markers : list of str
@@ -75,9 +75,11 @@ def prepare_cellpose_input_fov(
     lower_percentile, upper_percentile : float
         Percentile range for normalization.
     normalize : bool
-        If True (default), apply per-channel percentile normalization before fusion.
-        If False, channels are scaled to [0, 1] by dividing by 65535 without
-        per-channel normalization (Baseline A condition).
+        If True (default), percentile-normalize each marker and average the
+        available markers separately for nuclear and membrane channels.
+        If False, sum raw intensities without scaling or clipping.
+        Missing markers are excluded from the average; no available markers
+        produces a zero channel. Both modes save float32 outputs.
     """
     fov_path = Path(fov_path)
 
@@ -90,31 +92,38 @@ def prepare_cellpose_input_fov(
     h, w = sample.shape[-2], sample.shape[-1]
     out_img = np.zeros((2, h, w), dtype=np.float32)
 
+    nuclear_count = 0
     for marker in nuclear_markers:
         img_data = _read_marker(fov_path, marker)
         if img_data is not None:
+            nuclear_count += 1
             if normalize:
                 out_img[0] += normalize_channel(img_data, lower_percentile, upper_percentile)
             else:
-                out_img[0] += img_data.astype(np.float32) / 65535.0
+                out_img[0] += img_data.astype(np.float32)
         else:
             print(f"  [signal_prep] Warning: nuclear marker '{marker}' not found in {fov_path.name}")
-    out_img[0] = np.clip(out_img[0], 0.0, 1.0)
+    if normalize and nuclear_count > 0:
+        out_img[0] /= nuclear_count
+        out_img[0] = np.clip(out_img[0], 0.0, 1.0)
 
+    membrane_count = 0
     for marker in membrane_markers:
         img_data = _read_marker(fov_path, marker)
         if img_data is not None:
+            membrane_count += 1
             if normalize:
                 out_img[1] += normalize_channel(img_data, lower_percentile, upper_percentile)
             else:
-                out_img[1] += img_data.astype(np.float32) / 65535.0
+                out_img[1] += img_data.astype(np.float32)
         else:
             print(f"  [signal_prep] Warning: membrane marker '{marker}' not found in {fov_path.name}")
-    out_img[1] = np.clip(out_img[1], 0.0, 1.0)
+    if normalize and membrane_count > 0:
+        out_img[1] /= membrane_count
+        out_img[1] = np.clip(out_img[1], 0.0, 1.0)
 
-    out_img_16bit = (out_img * 65535).astype(np.uint16)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(str(output_path), out_img_16bit, imagej=True)
+    tifffile.imwrite(str(output_path), out_img, imagej=True)
 
 
 def prepare_cellpose_inputs(
@@ -140,8 +149,9 @@ def prepare_cellpose_inputs(
     lower_percentile, upper_percentile : float
         Percentile normalization range.
     normalize : bool
-        If True (default), apply per-channel percentile normalization.
-        If False, use raw scaling without per-channel normalization (Baseline A).
+        If True (default), percentile-normalize and average available markers.
+        If False, sum raw intensities without scaling or clipping.
+        Both modes save float32 outputs.
     output_subdir : str
         Subdirectory under segmentation/ for output files (default "cellpose_input").
     """
